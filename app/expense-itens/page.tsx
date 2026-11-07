@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { deleteExpenseItem, ExpenseItem, fetchExpenseItemData, updateExpenseItemData } from "./service";
+import { deleteExpenseItem, ExpenseItem, fetchExpenseItemData, updateExpenseItemData, uploadExpensePdf } from "./service";
 import { ExpenseType, fetchExpenseTypeData } from "../expense-types/service";
 
 const initialExpenseType: ExpenseType[] = [{id: 0, name: ""}];
@@ -17,6 +17,10 @@ const currency = new Intl.NumberFormat("pt-BR", {
   style: "currency",
   currency: "BRL",
 });
+const monthFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "long",
+  year: "numeric",
+});
 
 export default function ExpenseItemPage() {
   const [expenses, setExpenses] = useState(initialExpenses);
@@ -25,6 +29,10 @@ export default function ExpenseItemPage() {
   const [editingExpense, setEditingExpense] = useState(initialExpenses[0]);
   const [query, setQuery] = useState("");
   const [activeExpenseType, setActiveExpenseType] = useState("All");
+  const [activeMonth, setActiveMonth] = useState("All");
+  const [uploading, setUploading] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { 
     async function fetchData() {
@@ -38,6 +46,20 @@ export default function ExpenseItemPage() {
     fetchData();
   }, []);
 
+  const expenseMonths = useMemo(
+    () =>
+      [...new Set(
+        expenses
+          .map((expense) => expense.date.slice(0, 7))
+          .filter((month) => /^\d{4}-(0[1-9]|1[0-2])$/.test(month)),
+      )].sort().reverse(),
+    [expenses],
+  );
+  const monthLabel =
+    activeMonth === "All"
+      ? "All months"
+      : monthFormatter.format(new Date(`${activeMonth}-01T12:00:00`));
+
   const filteredExpenses = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return expenses.filter((expense) => {
@@ -47,9 +69,11 @@ export default function ExpenseItemPage() {
       const matchesExpenseType = activeExpenseType === "All" 
       || expense?.expenseType?.name === activeExpenseType 
       || (activeExpenseType === "Undefined" && expense?.expenseType?.name == null);
-      return matchesQuery && matchesExpenseType;
+      const matchesMonth =
+        activeMonth === "All" || expense.date.startsWith(activeMonth);
+      return matchesQuery && matchesExpenseType && matchesMonth;
     });
-  }, [activeExpenseType, expenses, query]);
+  }, [activeExpenseType, activeMonth, expenses, query]);
   const total = filteredExpenses.reduce((sum, expense) => sum + Number(expense.value), 0);
 
   function cancelEditing() {
@@ -81,6 +105,35 @@ export default function ExpenseItemPage() {
     console.log('deleteExpense:', id);
   }
 
+  async function handlePdfSelection(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      setUploadMessage("Please select a PDF file.");
+      return;
+    }
+
+    setUploading(true);
+    setUploadMessage("");
+    try {
+      await uploadExpensePdf(file);
+      const updatedExpenses = await fetchExpenseItemData();
+      if (!Array.isArray(updatedExpenses)) {
+        setUploadMessage("PDF uploaded, but expenses could not be refreshed.");
+      } else {
+        setExpenses(updatedExpenses);
+        setUploadMessage("PDF uploaded successfully.");
+      }
+    } catch (error) {
+      console.error("PDF upload error:", error);
+      setUploadMessage("Could not upload the PDF. Please try again.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[#f7f7f2] text-[#17211d]">
       <div className="mx-auto max-w-7xl px-5 py-6 sm:px-8 lg:px-12 lg:py-10">
@@ -101,13 +154,13 @@ export default function ExpenseItemPage() {
             <div className="mb-8 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
               <div>
                 <p className="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-[#ef6f51]">
-                  August 2026
+                  {monthLabel}
                 </p>
                 <h1 className="text-4xl font-semibold tracking-[-0.06em] sm:text-5xl">
                   Your expenses
                 </h1>
                 <p className="mt-3 max-w-md text-sm leading-6 text-[#68736d]">
-                  A clear view of where your money went this month.
+                  A clear view of where your money went.
                 </p>
               </div>
               <div className="rounded-2xl border border-[#dfe4dc] bg-white px-5 py-4 sm:min-w-44">
@@ -120,13 +173,31 @@ export default function ExpenseItemPage() {
               </div>
             </div>
 
-            <div className="mb-4 flex">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
               <Link
                 href="/expense-types"
                 className="inline-flex h-11 items-center rounded-xl border border-[#dfe4dc] bg-white px-4 text-sm font-semibold text-[#365443] transition hover:border-[#789783] hover:bg-[#f0f5f1]"
               >
                 Expense Types
               </Link>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                onChange={handlePdfSelection}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="inline-flex h-11 items-center rounded-xl border border-[#dfe4dc] bg-white px-4 text-sm font-semibold text-[#365443] transition hover:border-[#789783] hover:bg-[#f0f5f1] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {uploading ? "Uploading..." : "Upload Expenses PDF"}
+              </button>
+              <p role="status" className="text-sm text-[#68736d]">
+                {uploadMessage}
+              </p>
             </div>
 
             <div className="mb-5 flex flex-col gap-3 sm:flex-row">
@@ -152,6 +223,19 @@ export default function ExpenseItemPage() {
                 <option>Undefined</option>
                 {expenseTypes.map((expenseType) => (
                   <option key={expenseType.id}>{expenseType.name}</option>
+                ))}
+              </select>
+              <select
+                aria-label="Filter by month"
+                value={activeMonth}
+                onChange={(event) => setActiveMonth(event.target.value)}
+                className="h-12 rounded-xl border border-[#dfe4dc] bg-white px-4 text-sm outline-none focus:border-[#789783] focus:ring-2 focus:ring-[#d8e4da]"
+              >
+                <option value="All">All months</option>
+                {expenseMonths.map((month) => (
+                  <option key={month} value={month}>
+                    {monthFormatter.format(new Date(`${month}-01T12:00:00`))}
+                  </option>
                 ))}
               </select>
             </div>
